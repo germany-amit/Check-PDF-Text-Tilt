@@ -1,95 +1,102 @@
 import streamlit as st
 import fitz  # PyMuPDF
-from PIL import Image
 import pytesseract
-from textblob import TextBlob
+from PIL import Image
 import io
+from textblob import TextBlob
 
-st.title("📄 Tilted Text Corrector (FMEA Safety MVP)")
+st.title("📄 PDF Tilted Text Corrector with Agentic AI Agent")
 
-uploaded_file = st.file_uploader("Upload a PDF", type=["pdf"])
+uploaded_file = st.file_uploader("Upload a PDF", type=[".pdf"])
 
-def method1_pymupdf(doc):
-    """Extract text directly using PyMuPDF"""
+def extract_with_pymupdf(doc):
     text = ""
+    tilted_words = []
     for page in doc:
-        text += page.get_text("text") + "\n"
-    return text.strip()
+        for block in page.get_text("dict")["blocks"]:
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    span_text = span.get("text", "").strip()
+                    if not span_text:
+                        continue
+                    bbox = span["bbox"]
+                    # Detect tilt via bbox height/width ratio (simple heuristic)
+                    w = bbox[2] - bbox[0]
+                    h = bbox[3] - bbox[1]
+                    if h > w * 1.5:  # looks rotated/tilted
+                        tilted_words.append(span_text)
+                    text += " " + span_text
+    return text.strip(), tilted_words
 
-def method2_bbox_rotation(doc):
-    """Detect tilted words using bounding boxes + orientation"""
-    tilted = []
-    normal = []
-    for pnum, page in enumerate(doc, 1):
-        blocks = page.get_text("dict")["blocks"]
-        for b in blocks:
-            if "lines" in b:
-                for l in b["lines"]:
-                    for s in l["spans"]:
-                        txt = s.get("text", "").strip()
-                        if not txt:
-                            continue
-                        dir_vec = tuple(round(x, 2) for x in s.get("dir", (1, 0)))
-                        if dir_vec not in [(1, 0), (0, 1)]:
-                            tilted.append((pnum, txt, dir_vec))
-                        else:
-                            normal.append(txt)
-    return " ".join(normal + [w for _, w, _ in tilted])
-
-def method3_ocr(doc):
-    """Fallback OCR via pytesseract"""
-    text = ""
-    for page in doc:
-        pix = page.get_pixmap()
-        img = Image.open(io.BytesIO(pix.tobytes("png")))
-        text += pytesseract.image_to_string(img) + "\n"
-    return text.strip()
+def extract_with_ocr(page):
+    pix = page.get_pixmap()
+    img = Image.open(io.BytesIO(pix.tobytes("png")))
+    return pytesseract.image_to_string(img)
 
 def method4_correction(text):
-    """Spell & grammar correction"""
-    return str(TextBlob(text).correct())
+    blob = TextBlob(text)
+    return str(blob.correct())
 
-if uploaded_file:
+if uploaded_file is not None:
     doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-
-    st.subheader("🛠 Multi-Strategy Results (FMEA Safety Factor)")
     outputs = []
 
-    # Strategy 1
+    # Method 1 - PyMuPDF
     try:
-        out1 = method1_pymupdf(doc)
-        if out1:
-            outputs.append(("Method 1 (Direct Extract)", out1))
+        text, tilted = extract_with_pymupdf(doc)
+        outputs.append(("PyMuPDF", text))
+        st.subheader("Method 1: PyMuPDF Extraction")
+        st.write(text)
+        st.write("🌀 Tilted words (detected):", tilted)
     except Exception as e:
-        pass
+        outputs.append(("PyMuPDF", f"Failed: {e}"))
 
-    # Strategy 2
+    # Method 2 - OCR
     try:
-        out2 = method2_bbox_rotation(doc)
-        if out2:
-            outputs.append(("Method 2 (BBox Tilt Check)", out2))
+        page = doc[0]
+        ocr_text = extract_with_ocr(page)
+        outputs.append(("OCR", ocr_text))
+        st.subheader("Method 2: OCR Extraction")
+        st.write(ocr_text)
     except Exception as e:
-        pass
+        outputs.append(("OCR", f"Failed: {e}"))
 
-    # Strategy 3
-    try:
-        out3 = method3_ocr(doc)
-        if out3:
-            outputs.append(("Method 3 (OCR)", out3))
-    except Exception as e:
-        pass
-
-    # Pick first non-empty result
+    # Method 3 - Combine best
     final_text = ""
-    if outputs:
-        for label, text in outputs:
-            st.write(f"**{label}:** {text}")
-        final_text = outputs[0][1]  # choose first good output
+    for name, out in outputs:
+        if out and not out.startswith("Failed"):
+            final_text += " " + out
+    final_text = final_text.strip()
 
-    # Method 4 correction
+    # Method 4 - Correction
     if final_text:
         corrected = method4_correction(final_text)
         st.subheader("✅ Final Corrected Sentence")
         st.write(corrected)
-    else:
-        st.error("No text could be extracted by any method.")
+
+        # =======================
+        # 🤖 Agentic AI Agent
+        # =======================
+        st.subheader("🤖 Agentic AI Agent: Input vs Corrected Comparison")
+
+        import difflib
+        raw_text = outputs[0][1] if outputs else ""
+
+        if raw_text:
+            diff = difflib.ndiff(raw_text.split(), corrected.split())
+            added, removed, same = [], [], []
+            for d in diff:
+                if d.startswith("+ "):
+                    added.append(d[2:])
+                elif d.startswith("- "):
+                    removed.append(d[2:])
+                else:
+                    same.append(d[2:])
+
+            st.write("🔍 **Same words:**", " ".join(same))
+            st.write("➕ **Added/Corrected:**", " ".join(added))
+            st.write("❌ **Removed/Incorrect:**", " ".join(removed))
+
+            seq = difflib.SequenceMatcher(None, raw_text, corrected)
+            score = round(seq.ratio() * 100, 2)
+            st.write(f"📊 **Match Score:** {score}%")
