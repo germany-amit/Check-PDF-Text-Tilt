@@ -84,3 +84,12 @@ if uploaded_file:
     if outputs:
         for label, text in outputs:
             st.write(f"**{label}:** {text}")
+        final_text = outputs[0][1]  # choose first good output
+
+    # Method 4 correction
+    if final_text:
+        corrected = method4_correction(final_text)
+        st.subheader("✅ Final Corrected Sentence")
+        st.write(corrected)
+    else:
+        st.error("No text could be extracted by any method.")
